@@ -1,12 +1,13 @@
 import axios from "axios";
 import { io } from "socket.io-client";
 import pLimit from "p-limit";
-import fs from "fs";
-import ini from "ini";
+import express from "express";
 import cliProgress from "cli-progress";
 import readline from "node:readline";
 import http from "node:http";
 import https from "node:https";
+import path from "node:path";
+import { getConfig, listConfig, setConfig } from "./config";
 
 // ====================== TIPOS ======================
 interface FilaData {
@@ -28,28 +29,59 @@ interface ResultadoFila {
 
 // ====================== MAIN ======================
 async function main() {
-    // ====================== CONFIG ======================
-    const config = ini.parse(fs.readFileSync("./config.ini", "utf-8"));
+    // ====================== CONFIG (SQLite) ======================
+    const startupConfig = getConfig();
 
-    const IP = config.DEFAULT.IP;
-    const filaID = config.DEFAULT.filaID;
-    const targetUrl = config.DEFAULT.targetUrl;
-    const layoutVersion = parseInt(config.DEFAULT.layoutVersion);
+    const IP = startupConfig.IP;
+    const maxConcurrentStartup = startupConfig.multitasking;
 
-    // ====================== INPUT ======================
-    const rl = readline.createInterface({
-        input: process.stdin,
-        output: process.stdout,
+    // ====================== PANEL WEB DE CONFIGURACIÓN ======================
+    const app = express();
+    app.use(express.json());
+
+    app.get("/api/config", (_req, res) => {
+        res.json(listConfig());
     });
 
-    function ask(question: string): Promise<string> {
-        return new Promise((resolve) => rl.question(question, resolve));
+    app.put("/api/config", (req, res) => {
+        const allowed = ["IP", "filaID", "targetUrl", "layoutVersion", "proxy", "multitasking"];
+        const values: Record<string, string> = {};
+        for (const key of allowed) {
+            if (req.body?.[key] !== undefined) values[key] = String(req.body[key]);
+        }
+        setConfig(values);
+        res.json({ ok: true });
+    });
+
+    app.use(express.static(path.join(__dirname, "public")));
+
+    const webPort = parseInt(process.env.PORT ?? "3001", 10);
+    app.listen(webPort, "0.0.0.0", () => {
+        console.log(`🌐 Panel de configuración: http://0.0.0.0:${webPort}`);
+    });
+
+    // ====================== INPUT ======================
+    let maxConcurrent = maxConcurrentStartup;
+
+    if (process.stdin.isTTY) {
+        const rl = readline.createInterface({
+            input: process.stdin,
+            output: process.stdout,
+        });
+
+        function ask(question: string): Promise<string> {
+            return new Promise((resolve) => rl.question(question, resolve));
+        }
+
+        const multitasking = await ask(
+            `Cantidad de procesos simultáneos [${maxConcurrentStartup}]: `
+        );
+        rl.close();
+
+        if (multitasking.trim()) {
+            maxConcurrent = parseInt(multitasking, 10) || maxConcurrentStartup;
+        }
     }
-
-    const multitasking = await ask("Cantidad de procesos simultáneos: ");
-    rl.close();
-
-    const maxConcurrent = parseInt(multitasking, 10);
 
     // ====================== AXIOS KEEP-ALIVE ======================
     const httpClient = axios.create({
@@ -59,7 +91,7 @@ async function main() {
     });
 
     // ====================== FUNCION PROCESAR ======================
-    async function procesar(fila: FilaData): Promise<ResultadoFila> {
+    async function procesar(fila: FilaData, cfg: ReturnType<typeof getConfig>): Promise<ResultadoFila> {
         const { ticketId, cookies } = fila;
 
         if (!ticketId || !cookies) {
@@ -71,15 +103,15 @@ async function main() {
         }
 
         const payload = {
-            targetUrl,
+            targetUrl: cfg.targetUrl,
             customUrlParams: "",
-            layoutVersion,
+            layoutVersion: cfg.layoutVersion,
             layoutName: "Boca Socios",
             isClientRedayToRedirect: null,
             isBeforeOrIdle: true,
         };
 
-        const urlAPI = `https://bocajuniors.queue-it.net/spa-api/queue/bocajuniors/${filaID}/${ticketId}/status`;
+        const urlAPI = `https://bocajuniors.queue-it.net/spa-api/queue/bocajuniors/${cfg.filaID}/${ticketId}/status`;
 
         try {
             const response = await httpClient.post(urlAPI, payload, {
@@ -89,7 +121,7 @@ async function main() {
                     "User-Agent":
                         "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
                     Cookie: cookies,
-                    Referer: `https://bocajuniors.queue-it.net/?c=bocajuniors&e=${filaID}&q=${ticketId}`,
+                    Referer: `https://bocajuniors.queue-it.net/?c=bocajuniors&e=${cfg.filaID}&q=${ticketId}`,
                 },
             });
 
@@ -102,7 +134,7 @@ async function main() {
                 status: "verified",
                 isRedirected: false,
                 lastUpdate: Date.now(),
-                link: `https://bocajuniors.queue-it.net/?c=bocajuniors&e=${filaID}&q=${ticketId}`,
+                link: `https://bocajuniors.queue-it.net/?c=bocajuniors&e=${cfg.filaID}&q=${ticketId}`,
             };
         } catch (err: any) {
             return {
@@ -134,6 +166,9 @@ async function main() {
 
         console.log(`🔄 Verificando ${filas.length} filas...\n`);
 
+        // Lee la config fresca de SQLite en cada lote (los cambios del panel se aplican sin reiniciar)
+        const cfg = getConfig();
+
         const total = filas.length;
         let completed = 0;
 
@@ -152,7 +187,7 @@ async function main() {
 
         const tareas = filas.map((fila) =>
             limit(async () => {
-                const resultado = await procesar(fila);
+                const resultado = await procesar(fila, cfg);
 
                 try {
                     await httpClient.put(`${IP}/api/filas/${resultado.ticketId}`, resultado);

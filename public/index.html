@@ -1,0 +1,132 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Configuración - Verificator</title>
+    <style>
+        * { box-sizing: border-box; margin: 0; padding: 0; }
+        body {
+            font-family: system-ui, Arial, sans-serif;
+            background: #1e1e2e;
+            color: #cdd6f4;
+            display: flex;
+            justify-content: center;
+            padding: 40px 16px;
+        }
+        .card {
+            background: #313244;
+            border-radius: 10px;
+            padding: 28px;
+            width: 100%;
+            max-width: 520px;
+        }
+        h1 { font-size: 1.3rem; margin-bottom: 20px; }
+        label {
+            display: block;
+            font-size: 0.85rem;
+            margin: 14px 0 4px;
+            color: #a6adc8;
+        }
+        input {
+            width: 100%;
+            padding: 9px 10px;
+            border-radius: 6px;
+            border: 1px solid #45475a;
+            background: #1e1e2e;
+            color: #cdd6f4;
+            font-size: 0.95rem;
+        }
+        input:focus { outline: none; border-color: #89b4fa; }
+        button {
+            margin-top: 22px;
+            width: 100%;
+            padding: 10px;
+            border: none;
+            border-radius: 6px;
+            background: #89b4fa;
+            color: #1e1e2e;
+            font-size: 1rem;
+            font-weight: bold;
+            cursor: pointer;
+        }
+        button:disabled { opacity: 0.5; cursor: default; }
+        #status { margin-top: 14px; text-align: center; font-size: 0.9rem; min-height: 1.2em; }
+        .ok { color: #a6e3a1; }
+        .err { color: #f38ba8; }
+        .hint { margin-top: 18px; font-size: 0.8rem; color: #7f849c; }
+    </style>
+</head>
+<body>
+    <div class="card">
+        <h1>⚙️ Configuración del Verificator</h1>
+        <form id="form">
+            <label for="IP">IP del servidor</label>
+            <input id="IP" name="IP" required>
+
+            <label for="filaID">Fila ID</label>
+            <input id="filaID" name="filaID" required>
+
+            <label for="targetUrl">Target URL</label>
+            <input id="targetUrl" name="targetUrl" required>
+
+            <label for="layoutVersion">Layout Version</label>
+            <input id="layoutVersion" name="layoutVersion" required>
+
+            <label for="proxy">Proxy (host:puerto:user:pass)</label>
+            <input id="proxy" name="proxy">
+
+            <label for="multitasking">Procesos simultáneos</label>
+            <input id="multitasking" name="multitasking" type="number" min="1" required>
+
+            <button id="save" type="submit">Guardar</button>
+            <div id="status"></div>
+        </form>
+        <p class="hint">Nota: IP y procesos simultáneos se aplican al reiniciar el servicio. El resto se lee en cada sincronización de filas.</p>
+    </div>
+
+    <script>
+        const form = document.getElementById("form");
+        const statusEl = document.getElementById("status");
+        const saveBtn = document.getElementById("save");
+
+        async function load() {
+            try {
+                const res = await fetch("/api/config");
+                const data = await res.json();
+                for (const [key, value] of Object.entries(data)) {
+                    const input = form.elements[key];
+                    if (input) input.value = value;
+                }
+            } catch (e) {
+                statusEl.textContent = "Error cargando la configuración";
+                statusEl.className = "err";
+            }
+        }
+
+        form.addEventListener("submit", async (e) => {
+            e.preventDefault();
+            saveBtn.disabled = true;
+            statusEl.textContent = "";
+            const body = Object.fromEntries(new FormData(form).entries());
+            try {
+                const res = await fetch("/api/config", {
+                    method: "PUT",
+                    headers: { "Content-Type": "application/json" },
+                    body: JSON.stringify(body),
+                });
+                if (!res.ok) throw new Error("HTTP " + res.status);
+                statusEl.textContent = "✔ Configuración guardada";
+                statusEl.className = "ok";
+            } catch (err) {
+                statusEl.textContent = "✘ Error al guardar: " + err.message;
+                statusEl.className = "err";
+            } finally {
+                saveBtn.disabled = false;
+            }
+        });
+
+        load();
+    </script>
+</body>
+</html>

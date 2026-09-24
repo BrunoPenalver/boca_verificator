@@ -1,0 +1,12 @@
+services:
+  verificator:
+    build: .
+    container_name: verificator
+    restart: unless-stopped
+    ports:
+      - "3001:3001"
+    volumes:
+      - verificator-data:/app/data
+
+volumes:
+  verificator-data:
